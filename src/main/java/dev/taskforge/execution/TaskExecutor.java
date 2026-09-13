@@ -6,4 +6,9 @@ import dev.taskforge.task.Task;
 public interface TaskExecutor {
 
     void execute(Task task) throws Exception;
+
+    default String executeForResult(Task task) throws Exception {
+        execute(task);
+        return null;
+    }
 }

@@ -6,32 +6,46 @@ public final class SimulatedTaskExecutor implements TaskExecutor {
 
     @Override
     public void execute(Task task) throws Exception {
-        switch (task.type()) {
-            case COMPUTATION -> compute(task.payload());
-            case SLEEP -> sleep(task.payload());
-            case FILE_PROCESSING, DATA_TRANSFORMATION, REPORT -> simulateWork();
-        }
+        executeForResult(task);
     }
 
-    private void compute(String payload) {
+    @Override
+    public String executeForResult(Task task) throws Exception {
+        return switch (task.type()) {
+            case COMPUTATION -> compute(task.payload());
+            case SLEEP -> sleep(task.payload());
+            case FILE_PROCESSING, DATA_TRANSFORMATION, REPORT -> simulateWork(task);
+        };
+    }
+
+    private String compute(String payload) {
         int iterations = parseNonNegativeInt(payload, "iterations");
 
         long sum = 0;
+
         for (int i = 0; i < iterations; i++) {
             sum += i;
         }
+
+        return "iterations=" + iterations + "; sum=" + sum;
     }
 
-    private void sleep(String payload) throws InterruptedException {
+    private String sleep(String payload) throws InterruptedException {
         long milliseconds = parseNonNegativeLong(payload, "milliseconds");
+
         Thread.sleep(milliseconds);
+
+        return "slept=" + milliseconds + "ms";
     }
 
-    private void simulateWork() {
+    private String simulateWork(Task task) {
         long sum = 0;
+
         for (int i = 0; i < 10_000; i++) {
             sum += i;
         }
+
+        return "type=" + task.type() + "; payloadLength=" + task.payload().length();
     }
 
     private static int parseNonNegativeInt(String value, String fieldName) {

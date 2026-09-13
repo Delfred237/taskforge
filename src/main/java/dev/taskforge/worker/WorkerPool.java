@@ -3,6 +3,8 @@ package dev.taskforge.worker;
 import dev.taskforge.execution.TaskExecutor;
 import dev.taskforge.execution.TimeoutTaskExecutor;
 import dev.taskforge.queue.TaskQueue;
+import dev.taskforge.result.InMemoryTaskResultRepository;
+import dev.taskforge.result.TaskResultRepository;
 import dev.taskforge.retry.ExponentialBackoffRetryPolicy;
 import dev.taskforge.retry.RetryPolicy;
 import dev.taskforge.retry.TaskRetryScheduler;
@@ -23,6 +25,7 @@ public final class WorkerPool {
     private final int workerCount;
     private final TaskQueue taskQueue;
     private final TaskExecutor taskExecutor;
+    private final TaskResultRepository resultRepository;
 
     private final ExecutorService workerExecutor;
     private final ExecutorService executionExecutor;
@@ -39,7 +42,8 @@ public final class WorkerPool {
                 workerCount,
                 taskQueue,
                 taskExecutor,
-                new ExponentialBackoffRetryPolicy(Duration.ofMillis(100), Duration.ofSeconds(1))
+                new ExponentialBackoffRetryPolicy(Duration.ofMillis(100), Duration.ofSeconds(1)),
+                new InMemoryTaskResultRepository()
         );
     }
 
@@ -47,6 +51,20 @@ public final class WorkerPool {
                       TaskQueue taskQueue,
                       TaskExecutor taskExecutor,
                       RetryPolicy retryPolicy) {
+        this(
+                workerCount,
+                taskQueue,
+                taskExecutor,
+                retryPolicy,
+                new InMemoryTaskResultRepository()
+        );
+    }
+
+    public WorkerPool(int workerCount,
+                      TaskQueue taskQueue,
+                      TaskExecutor taskExecutor,
+                      RetryPolicy retryPolicy,
+                      TaskResultRepository resultRepository) {
         if (workerCount <= 0) {
             throw new IllegalArgumentException("workerCount must be greater than 0");
         }
@@ -58,6 +76,7 @@ public final class WorkerPool {
         this.workerCount = workerCount;
         this.taskQueue = taskQueue;
         this.taskExecutor = taskExecutor;
+        this.resultRepository = Objects.requireNonNull(resultRepository, "resultRepository must not be null");
 
         this.workerExecutor = Executors.newFixedThreadPool(workerCount, new WorkerThreadFactory());
         this.executionExecutor = Executors.newCachedThreadPool(new ExecutionThreadFactory());
@@ -74,7 +93,8 @@ public final class WorkerPool {
                     "Worker-" + (i + 1),
                     taskQueue,
                     timeoutTaskExecutor,
-                    retryScheduler
+                    retryScheduler,
+                    resultRepository
             ));
         }
     }
@@ -138,6 +158,10 @@ public final class WorkerPool {
 
     public int workerCount() {
         return workerCount;
+    }
+
+    public TaskResultRepository resultRepository() {
+        return resultRepository;
     }
 
     private static void requireNotNull(Object value, String message) {

@@ -2,6 +2,9 @@ package dev.taskforge.worker;
 
 import dev.taskforge.execution.TaskExecutor;
 import dev.taskforge.queue.TaskQueue;
+import dev.taskforge.result.InMemoryTaskResultRepository;
+import dev.taskforge.result.TaskResult;
+import dev.taskforge.result.TaskResultRepository;
 import dev.taskforge.retry.TaskRetryScheduler;
 import dev.taskforge.task.Task;
 
@@ -14,23 +17,34 @@ public final class Worker implements Runnable {
     private final TaskQueue taskQueue;
     private final TaskExecutor taskExecutor;
     private final TaskRetryScheduler retryScheduler;
+    private final TaskResultRepository resultRepository;
 
     public Worker(String name, TaskQueue taskQueue, TaskExecutor taskExecutor) {
-        this(name, taskQueue, taskExecutor, null);
+        this(name, taskQueue, taskExecutor, null, new InMemoryTaskResultRepository());
     }
 
     public Worker(String name,
                   TaskQueue taskQueue,
                   TaskExecutor taskExecutor,
                   TaskRetryScheduler retryScheduler) {
+        this(name, taskQueue, taskExecutor, retryScheduler, new InMemoryTaskResultRepository());
+    }
+
+    public Worker(String name,
+                  TaskQueue taskQueue,
+                  TaskExecutor taskExecutor,
+                  TaskRetryScheduler retryScheduler,
+                  TaskResultRepository resultRepository) {
         requireNotNull(name, "name must not be null");
         requireNotNull(taskQueue, "taskQueue must not be null");
         requireNotNull(taskExecutor, "taskExecutor must not be null");
+        requireNotNull(resultRepository, "resultRepository must not be null");
 
         this.name = name;
         this.taskQueue = taskQueue;
         this.taskExecutor = taskExecutor;
         this.retryScheduler = retryScheduler;
+        this.resultRepository = resultRepository;
     }
 
     @Override
@@ -48,7 +62,6 @@ public final class Worker implements Runnable {
                 break;
             } catch (RuntimeException exception) {
                 // Plus tard : logging.
-                // On continue pour ne pas tuer le worker sur une erreur inattendue.
             }
         }
     }
@@ -65,20 +78,44 @@ public final class Worker implements Runnable {
         }
 
         try {
-            taskExecutor.execute(task);
-            task.complete(Instant.now());
+            String output = taskExecutor.executeForResult(task);
+            Instant completedAt = Instant.now();
+
+            // 1. Sauvegarde du résultat AVANT de changer le statut
+            saveResultQuietly(TaskResult.success(task.id(), output, completedAt));
+
+            try {
+                // 2. Changement de statut
+                task.complete(completedAt);
+            } catch (RuntimeException exception) {
+                return true;
+            }
+
             return true;
         } catch (TimeoutException exception) {
+            Instant now = Instant.now();
+
+            saveResultQuietly(TaskResult.timeout(task.id(), task.timeout(), now));
             timeOutQuietly(task);
             retryIfPossible(task);
+
             return true;
         } catch (InterruptedException exception) {
             Thread.currentThread().interrupt();
+
+            Instant now = Instant.now();
+
+            saveResultQuietly(TaskResult.failure(task.id(), exception, now));
             failQuietly(task);
+
             return false;
         } catch (Exception exception) {
+            Instant now = Instant.now();
+
+            saveResultQuietly(TaskResult.failure(task.id(), exception, now));
             failQuietly(task);
             retryIfPossible(task);
+
             return true;
         }
     }
@@ -93,6 +130,13 @@ public final class Worker implements Runnable {
     private void timeOutQuietly(Task task) {
         try {
             task.timeOut(Instant.now());
+        } catch (RuntimeException ignored) {
+        }
+    }
+
+    private void saveResultQuietly(TaskResult result) {
+        try {
+            resultRepository.save(result);
         } catch (RuntimeException ignored) {
         }
     }

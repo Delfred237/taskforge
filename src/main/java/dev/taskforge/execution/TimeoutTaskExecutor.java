@@ -22,17 +22,19 @@ public final class TimeoutTaskExecutor implements TaskExecutor {
 
     @Override
     public void execute(Task task) throws Exception {
+        executeForResult(task);
+    }
+
+    @Override
+    public String executeForResult(Task task) throws Exception {
         Objects.requireNonNull(task, "task must not be null");
 
-        Callable<Void> callable = () -> {
-            delegate.execute(task);
-            return null;
-        };
+        Callable<String> callable = () -> delegate.executeForResult(task);
 
-        Future<Void> future = executionExecutor.submit(callable);
+        Future<String> future = executionExecutor.submit(callable);
 
         try {
-            future.get(task.timeout().toMillis(), TimeUnit.MILLISECONDS);
+            return future.get(task.timeout().toMillis(), TimeUnit.MILLISECONDS);
         } catch (InterruptedException exception) {
             future.cancel(true);
             throw exception;
