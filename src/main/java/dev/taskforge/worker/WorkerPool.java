@@ -1,7 +1,11 @@
 package dev.taskforge.worker;
 
 import dev.taskforge.execution.TaskExecutor;
+import dev.taskforge.execution.TimeoutTaskExecutor;
 import dev.taskforge.queue.TaskQueue;
+import dev.taskforge.retry.ExponentialBackoffRetryPolicy;
+import dev.taskforge.retry.RetryPolicy;
+import dev.taskforge.retry.TaskRetryScheduler;
 
 import java.time.Duration;
 import java.util.ArrayList;
@@ -9,35 +13,69 @@ import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 
 public final class WorkerPool {
 
     private final int workerCount;
     private final TaskQueue taskQueue;
     private final TaskExecutor taskExecutor;
-    private final ExecutorService executorService;
+
+    private final ExecutorService workerExecutor;
+    private final ExecutorService executionExecutor;
+    private final ScheduledExecutorService retryExecutor;
+
+    private final TaskRetryScheduler retryScheduler;
     private final List<Worker> workers;
 
     private volatile boolean started;
     private volatile boolean shutdownRequested;
 
     public WorkerPool(int workerCount, TaskQueue taskQueue, TaskExecutor taskExecutor) {
+        this(
+                workerCount,
+                taskQueue,
+                taskExecutor,
+                new ExponentialBackoffRetryPolicy(Duration.ofMillis(100), Duration.ofSeconds(1))
+        );
+    }
+
+    public WorkerPool(int workerCount,
+                      TaskQueue taskQueue,
+                      TaskExecutor taskExecutor,
+                      RetryPolicy retryPolicy) {
         if (workerCount <= 0) {
             throw new IllegalArgumentException("workerCount must be greater than 0");
         }
 
         requireNotNull(taskQueue, "taskQueue must not be null");
         requireNotNull(taskExecutor, "taskExecutor must not be null");
+        requireNotNull(retryPolicy, "retryPolicy must not be null");
 
         this.workerCount = workerCount;
         this.taskQueue = taskQueue;
         this.taskExecutor = taskExecutor;
-        this.executorService = Executors.newFixedThreadPool(workerCount, new WorkerThreadFactory());
+
+        this.workerExecutor = Executors.newFixedThreadPool(workerCount, new WorkerThreadFactory());
+        this.executionExecutor = Executors.newCachedThreadPool(new ExecutionThreadFactory());
+        this.retryExecutor = Executors.newSingleThreadScheduledExecutor(new RetryThreadFactory());
+
+        this.retryScheduler = new TaskRetryScheduler(retryExecutor, retryPolicy);
+
+        TaskExecutor timeoutTaskExecutor = new TimeoutTaskExecutor(taskExecutor, executionExecutor);
+
         this.workers = new ArrayList<>(workerCount);
 
         for (int i = 0; i < workerCount; i++) {
-            workers.add(new Worker("Worker-" + (i + 1), taskQueue, taskExecutor));
+            workers.add(new Worker(
+                    "Worker-" + (i + 1),
+                    taskQueue,
+                    timeoutTaskExecutor,
+                    retryScheduler
+            ));
         }
     }
 
@@ -51,7 +89,7 @@ public final class WorkerPool {
         }
 
         for (Worker worker : workers) {
-            executorService.submit(worker);
+            workerExecutor.submit(worker);
         }
 
         started = true;
@@ -66,20 +104,36 @@ public final class WorkerPool {
 
         shutdownRequested = true;
 
-        executorService.shutdown();
+        long millis = timeout.toMillis();
 
-        if (!executorService.awaitTermination(timeout.toMillis(), TimeUnit.MILLISECONDS)) {
-            executorService.shutdownNow();
-            executorService.awaitTermination(timeout.toMillis(), TimeUnit.MILLISECONDS);
+        workerExecutor.shutdown();
+
+        if (!workerExecutor.awaitTermination(millis, TimeUnit.MILLISECONDS)) {
+            workerExecutor.shutdownNow();
+            workerExecutor.awaitTermination(millis, TimeUnit.MILLISECONDS);
+        }
+
+        retryExecutor.shutdownNow();
+        retryExecutor.awaitTermination(millis, TimeUnit.MILLISECONDS);
+
+        executionExecutor.shutdown();
+
+        if (!executionExecutor.awaitTermination(millis, TimeUnit.MILLISECONDS)) {
+            executionExecutor.shutdownNow();
+            executionExecutor.awaitTermination(millis, TimeUnit.MILLISECONDS);
         }
     }
 
     public boolean isShutdown() {
-        return executorService.isShutdown();
+        return workerExecutor.isShutdown()
+                && retryExecutor.isShutdown()
+                && executionExecutor.isShutdown();
     }
 
     public boolean isTerminated() {
-        return executorService.isTerminated();
+        return workerExecutor.isTerminated()
+                && retryExecutor.isTerminated()
+                && executionExecutor.isTerminated();
     }
 
     public int workerCount() {
@@ -88,5 +142,29 @@ public final class WorkerPool {
 
     private static void requireNotNull(Object value, String message) {
         Objects.requireNonNull(value, message);
+    }
+
+    private static final class ExecutionThreadFactory implements ThreadFactory {
+
+        private final AtomicInteger counter = new AtomicInteger(1);
+
+        @Override
+        public Thread newThread(Runnable runnable) {
+            Thread thread = new Thread(runnable, "TaskExecutor-" + counter.getAndIncrement());
+            thread.setDaemon(false);
+            return thread;
+        }
+    }
+
+    private static final class RetryThreadFactory implements ThreadFactory {
+
+        private final AtomicInteger counter = new AtomicInteger(1);
+
+        @Override
+        public Thread newThread(Runnable runnable) {
+            Thread thread = new Thread(runnable, "TaskRetryScheduler-" + counter.getAndIncrement());
+            thread.setDaemon(false);
+            return thread;
+        }
     }
 }
