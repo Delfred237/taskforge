@@ -13,10 +13,10 @@ public final class Task {
     private final int maxRetries;
     private final Duration timeout;
 
-    private TaskStatus status;
-    private Instant startedAt;
-    private Instant completedAt;
-    private int retryCount;
+    private volatile TaskStatus status;
+    private volatile Instant startedAt;
+    private volatile Instant completedAt;
+    private volatile int retryCount;
 
     private Task(TaskId id,
                  TaskType type,
@@ -67,7 +67,7 @@ public final class Task {
         );
     }
 
-    public void start(Instant now) {
+    public synchronized void start(Instant now) {
         requireNotNull(now, "now must not be null");
         assertTransitionAllowed(TaskStatus.RUNNING);
 
@@ -75,7 +75,7 @@ public final class Task {
         this.startedAt = now;
     }
 
-    public void complete(Instant now) {
+    public synchronized void complete(Instant now) {
         requireNotNull(now, "now must not be null");
         assertTransitionAllowed(TaskStatus.COMPLETED);
 
@@ -83,7 +83,7 @@ public final class Task {
         this.completedAt = now;
     }
 
-    public void fail(Instant now) {
+    public synchronized void fail(Instant now) {
         requireNotNull(now, "now must not be null");
         assertTransitionAllowed(TaskStatus.FAILED);
 
@@ -94,7 +94,7 @@ public final class Task {
         }
     }
 
-    public void timeOut(Instant now) {
+    public synchronized void timeOut(Instant now) {
         requireNotNull(now, "now must not be null");
         assertTransitionAllowed(TaskStatus.TIMED_OUT);
 
@@ -105,7 +105,7 @@ public final class Task {
         }
     }
 
-    public void retry(Instant now) {
+    public synchronized void retry(Instant now) {
         requireNotNull(now, "now must not be null");
         assertTransitionAllowed(TaskStatus.RETRYING);
 
@@ -119,7 +119,7 @@ public final class Task {
         this.retryCount++;
     }
 
-    public void cancel(Instant now) {
+    public synchronized void cancel(Instant now) {
         requireNotNull(now, "now must not be null");
 
         if (!isCancellable()) {
@@ -139,11 +139,13 @@ public final class Task {
     }
 
     public boolean isTerminal() {
-        if (status.isAlwaysTerminal()) {
+        TaskStatus currentStatus = status;
+
+        if (currentStatus.isAlwaysTerminal()) {
             return true;
         }
 
-        return (status == TaskStatus.FAILED || status == TaskStatus.TIMED_OUT)
+        return (currentStatus == TaskStatus.FAILED || currentStatus == TaskStatus.TIMED_OUT)
                 && !hasRetriesRemaining();
     }
 
