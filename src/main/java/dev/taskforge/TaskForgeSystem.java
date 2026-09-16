@@ -11,6 +11,7 @@ import dev.taskforge.queue.TaskSubmitter;
 import dev.taskforge.result.InMemoryTaskResultRepository;
 import dev.taskforge.result.TaskResult;
 import dev.taskforge.result.TaskResultRepository;
+import dev.taskforge.retry.ExponentialBackoffRetryPolicy;
 import dev.taskforge.task.InMemoryTaskRepository;
 import dev.taskforge.task.Task;
 import dev.taskforge.task.TaskRepository;
@@ -46,7 +47,17 @@ public final class TaskForgeSystem {
         this.resultRepository = new InMemoryTaskResultRepository();
 
         TaskExecutor executor = new SimulatedTaskExecutor();
-        this.workerPool = new WorkerPool(workerCount, queue, executor);
+
+        // CORRECTION : On injecte explicitement le resultRepository et le metrics partagés
+        this.workerPool = new WorkerPool(
+                workerCount,
+                queue,
+                executor,
+                new ExponentialBackoffRetryPolicy(Duration.ofMillis(100), Duration.ofSeconds(1)),
+                this.resultRepository,
+                this.metrics
+        );
+
         this.server = new TaskServer(port, submitter, taskRepository, resultRepository, metrics);
     }
 

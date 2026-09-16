@@ -1,6 +1,8 @@
 package dev.taskforge.worker;
 
 import dev.taskforge.execution.TaskExecutor;
+import dev.taskforge.metrics.InMemoryMetricsRegistry;
+import dev.taskforge.metrics.MetricsRegistry;
 import dev.taskforge.queue.BoundedPriorityTaskQueue;
 import dev.taskforge.queue.TaskQueue;
 import dev.taskforge.result.InMemoryTaskResultRepository;
@@ -85,6 +87,7 @@ class TaskResultIntegrationTest {
     void successfulTaskShouldStoreSuccessResult() throws Exception {
         TaskQueue queue = new BoundedPriorityTaskQueue(10);
         InMemoryTaskResultRepository repository = new InMemoryTaskResultRepository();
+        MetricsRegistry metrics = new InMemoryMetricsRegistry();
         RetryPolicy retryPolicy = task -> Duration.ZERO;
 
         WorkerPool pool = new WorkerPool(
@@ -92,7 +95,8 @@ class TaskResultIntegrationTest {
                 queue,
                 resultExecutor("hello"),
                 retryPolicy,
-                repository
+                repository,
+                metrics
         );
 
         Task task = newTask(0, Duration.ofSeconds(5));
@@ -116,6 +120,7 @@ class TaskResultIntegrationTest {
     void failedTaskShouldStoreFailureResult() throws Exception {
         TaskQueue queue = new BoundedPriorityTaskQueue(10);
         InMemoryTaskResultRepository repository = new InMemoryTaskResultRepository();
+        MetricsRegistry metrics = new InMemoryMetricsRegistry();
         RetryPolicy retryPolicy = task -> Duration.ZERO;
 
         WorkerPool pool = new WorkerPool(
@@ -123,7 +128,8 @@ class TaskResultIntegrationTest {
                 queue,
                 failingExecutor("boom"),
                 retryPolicy,
-                repository
+                repository,
+                metrics
         );
 
         Task task = newTask(0, Duration.ofSeconds(5));
@@ -148,6 +154,7 @@ class TaskResultIntegrationTest {
     void timedOutTaskShouldStoreTimeoutResult() throws Exception {
         TaskQueue queue = new BoundedPriorityTaskQueue(10);
         InMemoryTaskResultRepository repository = new InMemoryTaskResultRepository();
+        MetricsRegistry metrics = new InMemoryMetricsRegistry();
         RetryPolicy retryPolicy = task -> Duration.ZERO;
 
         WorkerPool pool = new WorkerPool(
@@ -155,7 +162,8 @@ class TaskResultIntegrationTest {
                 queue,
                 sleepingExecutor(300),
                 retryPolicy,
-                repository
+                repository,
+                metrics
         );
 
         Task task = newTask(0, Duration.ofMillis(100));
@@ -180,6 +188,7 @@ class TaskResultIntegrationTest {
     void retriedTaskShouldEventuallyStoreSuccessResult() throws Exception {
         TaskQueue queue = new BoundedPriorityTaskQueue(10);
         InMemoryTaskResultRepository repository = new InMemoryTaskResultRepository();
+        MetricsRegistry metrics = new InMemoryMetricsRegistry();
         RetryPolicy retryPolicy = task -> Duration.ofMillis(10);
 
         AtomicInteger attempts = new AtomicInteger(0);
@@ -205,7 +214,8 @@ class TaskResultIntegrationTest {
                 queue,
                 executor,
                 retryPolicy,
-                repository
+                repository,
+                metrics
         );
 
         Task task = newTask(1, Duration.ofSeconds(5));

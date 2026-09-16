@@ -1,6 +1,8 @@
 package dev.taskforge.network;
 
 import dev.taskforge.execution.SimulatedTaskExecutor;
+import dev.taskforge.metrics.InMemoryMetricsRegistry;
+import dev.taskforge.metrics.MetricsRegistry;
 import dev.taskforge.network.client.TaskClient;
 import dev.taskforge.network.protocol.Action;
 import dev.taskforge.network.protocol.Request;
@@ -38,6 +40,7 @@ class MultiClientServerTest {
     private TaskSubmitter submitter;
     private TaskRepository taskRepository;
     private TaskResultRepository resultRepository;
+    private MetricsRegistry metrics;
     private WorkerPool pool;
     private TaskServer server;
     private int port;
@@ -45,15 +48,15 @@ class MultiClientServerTest {
     @BeforeEach
     void setUp() throws IOException {
         queue = new BoundedPriorityTaskQueue(100);
-        submitter = new TaskSubmitter(queue);
+        metrics = new InMemoryMetricsRegistry();
+        submitter = new TaskSubmitter(queue, metrics);
         taskRepository = new InMemoryTaskRepository();
         resultRepository = new InMemoryTaskResultRepository();
 
         pool = new WorkerPool(2, queue, new SimulatedTaskExecutor());
         pool.start();
 
-        // Port 0 = le système d'exploitation choisit un port libre aléatoire
-        server = new TaskServer(0, submitter, taskRepository, resultRepository);
+        server = new TaskServer(0, submitter, taskRepository, resultRepository, metrics);
         server.startAsync();
         port = server.getPort();
     }
@@ -71,7 +74,6 @@ class MultiClientServerTest {
         List<Callable<Response>> tasks = new ArrayList<>();
 
         for (int i = 0; i < clientCount; i++) {
-            final int clientId = i;
             tasks.add(() -> {
                 try (TaskClient client = new TaskClient("localhost", port)) {
                     client.connect();
@@ -94,18 +96,14 @@ class MultiClientServerTest {
             assertEquals("Server status", response.message());
         }
 
-        // Si le serveur était synchrone, 10 clients prendraient beaucoup plus de temps
-        // (surtout s'il y avait du traitement). Ici, c'est quasi-instantané.
         long duration = endTime - startTime;
         assertTrue(duration < 2000, "Concurrent requests should be processed quickly, took: " + duration + "ms");
     }
 
     @Test
     void serverShouldNotCrashOnSlowOrSilentClient() throws Exception {
-        // 1. Ouvrir une connexion et ne rien envoyer (client zombie)
         Socket silentClient = new Socket("localhost", port);
 
-        // 2. Un autre client doit pouvoir se connecter et recevoir une réponse
         try (TaskClient activeClient = new TaskClient("localhost", port)) {
             activeClient.connect();
             Request req = activeClient.createRequest(Action.SERVER_STATUS, "");
@@ -114,7 +112,6 @@ class MultiClientServerTest {
             assertTrue(response.success());
         }
 
-        // 3. Fermer le client zombie
         silentClient.close();
     }
 }

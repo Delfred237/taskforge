@@ -1,6 +1,8 @@
 package dev.taskforge.concurrency;
 
 import dev.taskforge.execution.TaskExecutor;
+import dev.taskforge.metrics.InMemoryMetricsRegistry;
+import dev.taskforge.metrics.MetricsRegistry;
 import dev.taskforge.queue.BoundedPriorityTaskQueue;
 import dev.taskforge.queue.TaskQueue;
 import dev.taskforge.queue.TaskSubmitter;
@@ -46,7 +48,8 @@ class ProducerConsumerTest {
         int totalTasks = producerCount * tasksPerProducer;
 
         TaskQueue queue = new BoundedPriorityTaskQueue(10);
-        TaskSubmitter submitter = new TaskSubmitter(queue);
+        MetricsRegistry metrics = new InMemoryMetricsRegistry();
+        TaskSubmitter submitter = new TaskSubmitter(queue, metrics);
 
         Set<TaskId> submitted = ConcurrentHashMap.newKeySet();
         Set<TaskId> processed = ConcurrentHashMap.newKeySet();
@@ -112,7 +115,8 @@ class ProducerConsumerTest {
         int totalTasks = 30;
 
         TaskQueue queue = new BoundedPriorityTaskQueue(5);
-        TaskSubmitter submitter = new TaskSubmitter(queue);
+        MetricsRegistry metrics = new InMemoryMetricsRegistry();
+        TaskSubmitter submitter = new TaskSubmitter(queue, metrics);
 
         Set<TaskId> processed = ConcurrentHashMap.newKeySet();
         AtomicInteger duplicates = new AtomicInteger(0);
@@ -152,7 +156,8 @@ class ProducerConsumerTest {
     @Test
     void submitShouldReturnFalseWhenQueueIsFull() {
         TaskQueue queue = new BoundedPriorityTaskQueue(1);
-        TaskSubmitter submitter = new TaskSubmitter(queue);
+        MetricsRegistry metrics = new InMemoryMetricsRegistry();
+        TaskSubmitter submitter = new TaskSubmitter(queue, metrics);
 
         assertTrue(submitter.submit(newTask("task-1")));
         assertFalse(submitter.submit(newTask("task-2")));

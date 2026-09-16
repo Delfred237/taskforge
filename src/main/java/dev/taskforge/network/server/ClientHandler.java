@@ -59,25 +59,29 @@ final class ClientHandler implements Runnable {
              BufferedReader in = new BufferedReader(new InputStreamReader(socket.getInputStream()));
              PrintWriter out = new PrintWriter(socket.getOutputStream(), true)) {
 
+            // Timeout d'inactivité : si le client ne parle pas pendant 5s, on ferme la connexion
             socket.setSoTimeout(CLIENT_READ_TIMEOUT_MS);
 
-            String line = in.readLine();
-            if (line == null || line.isBlank()) {
-                return;
+            String line;
+            // BOUCLE KEEP-ALIVE : On traite plusieurs requêtes sur la même connexion TCP
+            while ((line = in.readLine()) != null) {
+                if (line.isBlank()) {
+                    continue;
+                }
+
+                metrics.increment("network.requests");
+                Request request = codec.decode(line, Request.class);
+                Response response = processRequest(request);
+
+                out.println(codec.encode(response));
             }
-
-            metrics.increment("network.requests");
-            Request request = codec.decode(line, Request.class);
-            Response response = processRequest(request);
-
-            out.println(codec.encode(response));
 
         } catch (SocketTimeoutException e) {
             metrics.increment("network.timeouts");
-            log.warn("Client timed out: {}", socket.getRemoteSocketAddress());
+            log.debug("Client connection timed out (idle): {}", socket.getRemoteSocketAddress());
         } catch (IOException e) {
             metrics.increment("network.errors");
-            log.warn("IO Error with client {}: {}", socket.getRemoteSocketAddress(), e.getMessage());
+            log.debug("IO Error with client {} (likely disconnected): {}", socket.getRemoteSocketAddress(), e.getMessage());
         } catch (Exception e) {
             metrics.increment("network.errors");
             log.error("Unexpected error handling client", e);
@@ -99,46 +103,72 @@ final class ClientHandler implements Runnable {
         }
     }
 
-    private Response handleSubmit(Request request) throws InterruptedException {
-        SubmitPayload payload = gson.fromJson(request.payload(), SubmitPayload.class);
+    private Response handleSubmit(Request request) {
+        try {
+            SubmitPayload payload = gson.fromJson(request.payload(), SubmitPayload.class);
 
-        TaskType type = TaskType.valueOf(payload.type.toUpperCase());
-        TaskPriority priority = TaskPriority.valueOf(payload.priority.toUpperCase());
+            if (payload == null || payload.type == null || payload.priority == null) {
+                return Response.error(request.requestId(), "Missing required fields: type, priority");
+            }
 
-        Task task = Task.create(
-                type,
-                payload.data,
-                priority,
-                payload.maxRetries != null ? payload.maxRetries : 0,
-                Duration.ofMillis(payload.timeoutMs != null ? payload.timeoutMs : 5000)
-        );
+            TaskType type;
+            TaskPriority priority;
+            try {
+                type = TaskType.valueOf(payload.type.toUpperCase());
+                priority = TaskPriority.valueOf(payload.priority.toUpperCase());
+            } catch (IllegalArgumentException e) {
+                return Response.error(request.requestId(), "Invalid task type or priority: " + e.getMessage());
+            }
 
-        taskRepository.save(task);
-        submitter.submitBlocking(task);
+            Task task = Task.create(
+                    type,
+                    payload.data != null ? payload.data : "",
+                    priority,
+                    payload.maxRetries != null ? payload.maxRetries : 0,
+                    Duration.ofMillis(payload.timeoutMs != null ? payload.timeoutMs : 5000)
+            );
 
-        return Response.ok(request.requestId(), "Task submitted", task.id().toString());
+            taskRepository.save(task);
+            submitter.submitBlocking(task);
+
+            return Response.ok(request.requestId(), "Task submitted", task.id().toString());
+
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return Response.error(request.requestId(), "Server is shutting down");
+        } catch (Exception e) {
+            return Response.error(request.requestId(), "Invalid payload format: " + e.getMessage());
+        }
     }
 
     private Response handleGetStatus(Request request) {
-        TaskId taskId = TaskId.fromString(request.payload());
-        Optional<Task> task = taskRepository.findById(taskId);
+        try {
+            TaskId taskId = TaskId.fromString(request.payload());
+            Optional<Task> task = taskRepository.findById(taskId);
 
-        if (task.isEmpty()) {
-            return Response.error(request.requestId(), "Task not found");
+            if (task.isEmpty()) {
+                return Response.error(request.requestId(), "Task not found");
+            }
+
+            return Response.ok(request.requestId(), "Status retrieved", task.get().status().name());
+        } catch (Exception e) {
+            return Response.error(request.requestId(), "Invalid Task ID format");
         }
-
-        return Response.ok(request.requestId(), "Status retrieved", task.get().status().name());
     }
 
     private Response handleGetResult(Request request) {
-        TaskId taskId = TaskId.fromString(request.payload());
-        Optional<TaskResult> result = resultRepository.findByTaskId(taskId);
+        try {
+            TaskId taskId = TaskId.fromString(request.payload());
+            Optional<TaskResult> result = resultRepository.findByTaskId(taskId);
 
-        if (result.isEmpty()) {
-            return Response.error(request.requestId(), "Result not found or task not finished");
+            if (result.isEmpty()) {
+                return Response.error(request.requestId(), "Result not found or task not finished");
+            }
+
+            return Response.ok(request.requestId(), "Result retrieved", codec.encode(result.get()));
+        } catch (Exception e) {
+            return Response.error(request.requestId(), "Invalid Task ID format");
         }
-
-        return Response.ok(request.requestId(), "Result retrieved", codec.encode(result.get()));
     }
 
     private Response handleServerStatus(Request request) {

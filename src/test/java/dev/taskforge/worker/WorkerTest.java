@@ -1,8 +1,12 @@
 package dev.taskforge.worker;
 
 import dev.taskforge.execution.TaskExecutor;
+import dev.taskforge.metrics.InMemoryMetricsRegistry;
+import dev.taskforge.metrics.MetricsRegistry;
 import dev.taskforge.queue.BoundedPriorityTaskQueue;
 import dev.taskforge.queue.TaskQueue;
+import dev.taskforge.result.InMemoryTaskResultRepository;
+import dev.taskforge.result.TaskResultRepository;
 import dev.taskforge.task.Task;
 import dev.taskforge.task.TaskPriority;
 import dev.taskforge.task.TaskStatus;
@@ -49,13 +53,15 @@ class WorkerTest {
     @Test
     void workerShouldExecuteTaskAndMarkCompleted() throws Exception {
         TaskQueue queue = new BoundedPriorityTaskQueue(10);
+        MetricsRegistry metrics = new InMemoryMetricsRegistry();
+        TaskResultRepository resultRepository = new InMemoryTaskResultRepository();
         Task task = newTask("100");
 
         TaskExecutor executor = executedTask -> {
             // Simulation d'exécution.
         };
 
-        Worker worker = new Worker("Worker-1", queue, executor);
+        Worker worker = new Worker("Worker-1", queue, executor, null, resultRepository, metrics);
         ExecutorService executorService = Executors.newSingleThreadExecutor();
 
         try {
@@ -73,13 +79,15 @@ class WorkerTest {
     @Test
     void workerShouldMarkTaskFailedWhenExecutionThrowsException() throws Exception {
         TaskQueue queue = new BoundedPriorityTaskQueue(10);
+        MetricsRegistry metrics = new InMemoryMetricsRegistry();
+        TaskResultRepository resultRepository = new InMemoryTaskResultRepository();
         Task task = newTask("100");
 
         TaskExecutor executor = executedTask -> {
             throw new RuntimeException("Simulated failure");
         };
 
-        Worker worker = new Worker("Worker-1", queue, executor);
+        Worker worker = new Worker("Worker-1", queue, executor, null, resultRepository, metrics);
         ExecutorService executorService = Executors.newSingleThreadExecutor();
 
         try {
@@ -97,6 +105,8 @@ class WorkerTest {
     @Test
     void workerShouldContinueProcessingAfterTaskFailure() throws Exception {
         TaskQueue queue = new BoundedPriorityTaskQueue(10);
+        MetricsRegistry metrics = new InMemoryMetricsRegistry();
+        TaskResultRepository resultRepository = new InMemoryTaskResultRepository();
 
         Task failingTask = newTask("fail");
         Task successTask = newTask("success");
@@ -107,7 +117,7 @@ class WorkerTest {
             }
         };
 
-        Worker worker = new Worker("Worker-1", queue, executor);
+        Worker worker = new Worker("Worker-1", queue, executor, null, resultRepository, metrics);
         ExecutorService executorService = Executors.newSingleThreadExecutor();
 
         try {
@@ -126,9 +136,11 @@ class WorkerTest {
     @Test
     void workerShouldStopWhenInterrupted() throws Exception {
         TaskQueue queue = new BoundedPriorityTaskQueue(10);
+        MetricsRegistry metrics = new InMemoryMetricsRegistry();
+        TaskResultRepository resultRepository = new InMemoryTaskResultRepository();
 
         Worker worker = new Worker("Worker-1", queue, executedTask -> {
-        });
+        }, null, resultRepository, metrics);
 
         ExecutorService executorService = Executors.newSingleThreadExecutor();
 
