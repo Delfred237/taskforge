@@ -11,6 +11,7 @@ import java.io.IOException;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.net.SocketException;
+import java.net.SocketTimeoutException; // AJOUTER CET IMPORT
 import java.util.Objects;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -112,7 +113,6 @@ public final class TaskServer {
         while (running) {
             try {
                 Socket clientSocket = serverSocket.accept();
-                // Passage correct des 5 arguments au ClientHandler
                 connectionExecutor.submit(new ClientHandler(
                         clientSocket,
                         submitter,
@@ -120,13 +120,17 @@ public final class TaskServer {
                         resultRepository,
                         metrics
                 ));
+            } catch (SocketTimeoutException e) {
+                // C'est NORMAL. C'est juste le timeout qui permet de vérifier 'running'
+                // On ne logue rien pour éviter de spammer les logs
             } catch (SocketException e) {
-                if (!running) {
-                    break;
+                // Se produit généralement quand on ferme le serverSocket pendant l'arrêt
+                if (running) {
+                    log.error("Socket error accepting client", e);
                 }
             } catch (IOException e) {
                 if (running) {
-                    log.error("Error accepting client", e);
+                    log.error("IO Error accepting client", e);
                 }
             }
         }
