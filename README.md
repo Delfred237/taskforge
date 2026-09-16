@@ -254,3 +254,6 @@ mvn test -Dtest=TaskForgeSystemIntegrationTest
 
 ## 📄 Licence
 MIT
+
+## Author
+Fossi Delfred
