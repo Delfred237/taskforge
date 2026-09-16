@@ -2,6 +2,7 @@ package dev.taskforge.queue;
 
 import dev.taskforge.task.Task;
 
+import java.util.List;
 import java.time.Duration;
 import java.util.Optional;
 
@@ -22,4 +23,6 @@ public interface TaskQueue {
     int remainingCapacity();
 
     boolean isEmpty();
+
+    List<Task> drain();
 }

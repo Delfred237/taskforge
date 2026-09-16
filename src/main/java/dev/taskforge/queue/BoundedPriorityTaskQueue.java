@@ -3,6 +3,8 @@ package dev.taskforge.queue;
 import dev.taskforge.task.Task;
 
 import java.time.Duration;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Comparator;
 import java.util.Objects;
 import java.util.Optional;
@@ -143,6 +145,22 @@ public final class BoundedPriorityTaskQueue implements TaskQueue {
         lock.lock();
         try {
             return queue.isEmpty();
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    @Override
+    public List<Task> drain() {
+        lock.lock();
+        try {
+            List<Task> remaining = new ArrayList<>();
+            while (!queue.isEmpty()) {
+                remaining.add(queue.poll().task());
+            }
+            // Réveiller les producteurs bloqués sur put() pour qu'ils voient que la queue est vide
+            notFull.signalAll();
+            return remaining;
         } finally {
             lock.unlock();
         }
