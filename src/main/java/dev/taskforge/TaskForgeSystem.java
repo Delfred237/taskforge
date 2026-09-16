@@ -2,6 +2,8 @@ package dev.taskforge;
 
 import dev.taskforge.execution.SimulatedTaskExecutor;
 import dev.taskforge.execution.TaskExecutor;
+import dev.taskforge.metrics.InMemoryMetricsRegistry;
+import dev.taskforge.metrics.MetricsRegistry;
 import dev.taskforge.network.server.TaskServer;
 import dev.taskforge.queue.BoundedPriorityTaskQueue;
 import dev.taskforge.queue.TaskQueue;
@@ -13,6 +15,8 @@ import dev.taskforge.task.InMemoryTaskRepository;
 import dev.taskforge.task.Task;
 import dev.taskforge.task.TaskRepository;
 import dev.taskforge.worker.WorkerPool;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.time.Duration;
@@ -22,10 +26,13 @@ import java.util.Objects;
 
 public final class TaskForgeSystem {
 
+    private static final Logger log = LoggerFactory.getLogger(TaskForgeSystem.class);
+
     private final TaskQueue queue;
     private final TaskSubmitter submitter;
     private final TaskRepository taskRepository;
     private final TaskResultRepository resultRepository;
+    private final MetricsRegistry metrics;
     private final WorkerPool workerPool;
     private final TaskServer server;
 
@@ -33,13 +40,14 @@ public final class TaskForgeSystem {
 
     public TaskForgeSystem(int port, int workerCount, int queueCapacity) {
         this.queue = new BoundedPriorityTaskQueue(queueCapacity);
-        this.submitter = new TaskSubmitter(queue);
+        this.metrics = new InMemoryMetricsRegistry();
+        this.submitter = new TaskSubmitter(queue, metrics);
         this.taskRepository = new InMemoryTaskRepository();
         this.resultRepository = new InMemoryTaskResultRepository();
 
         TaskExecutor executor = new SimulatedTaskExecutor();
         this.workerPool = new WorkerPool(workerCount, queue, executor);
-        this.server = new TaskServer(port, submitter, taskRepository, resultRepository);
+        this.server = new TaskServer(port, submitter, taskRepository, resultRepository, metrics);
     }
 
     public synchronized void start() throws IOException {
@@ -51,7 +59,7 @@ public final class TaskForgeSystem {
         server.startAsync();
         started = true;
 
-        System.out.println("[TaskForgeSystem] System started.");
+        log.info("TaskForgeSystem started");
     }
 
     public synchronized void shutdown(Duration timeout) {
@@ -61,19 +69,16 @@ public final class TaskForgeSystem {
 
         Objects.requireNonNull(timeout, "timeout must not be null");
 
-        System.out.println("[TaskForgeSystem] Initiating graceful shutdown...");
+        log.info("TaskForgeSystem initiating graceful shutdown...");
 
-        // 1. Arrêter le serveur réseau pour ne plus accepter de clients
         server.stop();
-
-        // 2. Refuser les nouvelles soumissions de tâches
         submitter.close();
 
-        // 3. Vider la queue et annuler les tâches en attente
         List<Task> pendingTasks = queue.drain();
         for (Task task : pendingTasks) {
             try {
                 task.cancel(Instant.now());
+                metrics.increment("tasks.cancelled");
                 TaskResult result = TaskResult.failure(
                         task.id(),
                         new RuntimeException("Task cancelled due to system shutdown"),
@@ -85,7 +90,6 @@ public final class TaskForgeSystem {
             }
         }
 
-        // 4. Arrêter les workers avec le timeout fourni
         try {
             workerPool.shutdown(timeout);
         } catch (InterruptedException e) {
@@ -93,7 +97,7 @@ public final class TaskForgeSystem {
         }
 
         started = false;
-        System.out.println("[TaskForgeSystem] Shutdown complete.");
+        log.info("TaskForgeSystem shutdown complete");
     }
 
     public boolean isStarted() {
@@ -114,5 +118,9 @@ public final class TaskForgeSystem {
 
     public TaskServer server() {
         return server;
+    }
+
+    public MetricsRegistry metrics() {
+        return metrics;
     }
 }

@@ -1,54 +1,48 @@
 package dev.taskforge.worker;
 
 import dev.taskforge.execution.TaskExecutor;
+import dev.taskforge.metrics.MetricsRegistry;
 import dev.taskforge.queue.TaskQueue;
 import dev.taskforge.result.InMemoryTaskResultRepository;
 import dev.taskforge.result.TaskResult;
 import dev.taskforge.result.TaskResultRepository;
 import dev.taskforge.retry.TaskRetryScheduler;
 import dev.taskforge.task.Task;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.time.Instant;
+import java.util.Objects;
 import java.util.concurrent.TimeoutException;
 
 public final class Worker implements Runnable {
+
+    private static final Logger log = LoggerFactory.getLogger(Worker.class);
 
     private final String name;
     private final TaskQueue taskQueue;
     private final TaskExecutor taskExecutor;
     private final TaskRetryScheduler retryScheduler;
     private final TaskResultRepository resultRepository;
-
-    public Worker(String name, TaskQueue taskQueue, TaskExecutor taskExecutor) {
-        this(name, taskQueue, taskExecutor, null, new InMemoryTaskResultRepository());
-    }
-
-    public Worker(String name,
-                  TaskQueue taskQueue,
-                  TaskExecutor taskExecutor,
-                  TaskRetryScheduler retryScheduler) {
-        this(name, taskQueue, taskExecutor, retryScheduler, new InMemoryTaskResultRepository());
-    }
+    private final MetricsRegistry metrics;
 
     public Worker(String name,
                   TaskQueue taskQueue,
                   TaskExecutor taskExecutor,
                   TaskRetryScheduler retryScheduler,
-                  TaskResultRepository resultRepository) {
-        requireNotNull(name, "name must not be null");
-        requireNotNull(taskQueue, "taskQueue must not be null");
-        requireNotNull(taskExecutor, "taskExecutor must not be null");
-        requireNotNull(resultRepository, "resultRepository must not be null");
-
-        this.name = name;
-        this.taskQueue = taskQueue;
-        this.taskExecutor = taskExecutor;
+                  TaskResultRepository resultRepository,
+                  MetricsRegistry metrics) {
+        this.name = Objects.requireNonNull(name, "name must not be null");
+        this.taskQueue = Objects.requireNonNull(taskQueue, "taskQueue must not be null");
+        this.taskExecutor = Objects.requireNonNull(taskExecutor, "taskExecutor must not be null");
+        this.resultRepository = Objects.requireNonNull(resultRepository, "resultRepository must not be null");
+        this.metrics = Objects.requireNonNull(metrics, "metrics must not be null");
         this.retryScheduler = retryScheduler;
-        this.resultRepository = resultRepository;
     }
 
     @Override
     public void run() {
+        log.debug("Worker {} started", name);
         while (!Thread.currentThread().isInterrupted()) {
             try {
                 Task task = taskQueue.take();
@@ -61,9 +55,10 @@ public final class Worker implements Runnable {
                 Thread.currentThread().interrupt();
                 break;
             } catch (RuntimeException exception) {
-                // Plus tard : logging.
+                log.error("Worker {} unexpected error", name, exception);
             }
         }
+        log.debug("Worker {} stopped", name);
     }
 
     private boolean process(Task task) {
@@ -74,6 +69,7 @@ public final class Worker implements Runnable {
         try {
             task.start(Instant.now());
         } catch (RuntimeException exception) {
+            log.warn("Worker {} could not start task {}: {}", name, task.id(), exception.getMessage());
             return true;
         }
 
@@ -81,13 +77,14 @@ public final class Worker implements Runnable {
             String output = taskExecutor.executeForResult(task);
             Instant completedAt = Instant.now();
 
-            // 1. Sauvegarde du résultat AVANT de changer le statut
             saveResultQuietly(TaskResult.success(task.id(), output, completedAt));
 
             try {
-                // 2. Changement de statut
                 task.complete(completedAt);
+                metrics.increment("tasks.completed");
+                log.debug("Task {} completed by worker {}", task.id(), name);
             } catch (RuntimeException exception) {
+                log.warn("Task {} could not be marked completed: {}", task.id(), exception.getMessage());
                 return true;
             }
 
@@ -97,6 +94,8 @@ public final class Worker implements Runnable {
 
             saveResultQuietly(TaskResult.timeout(task.id(), task.timeout(), now));
             timeOutQuietly(task);
+            metrics.increment("tasks.timeout");
+            log.warn("Task {} timed out in worker {}", task.id(), name);
             retryIfPossible(task);
 
             return true;
@@ -107,6 +106,8 @@ public final class Worker implements Runnable {
 
             saveResultQuietly(TaskResult.failure(task.id(), exception, now));
             failQuietly(task);
+            metrics.increment("tasks.interrupted");
+            log.warn("Task {} interrupted in worker {}", task.id(), name);
 
             return false;
         } catch (Exception exception) {
@@ -114,6 +115,8 @@ public final class Worker implements Runnable {
 
             saveResultQuietly(TaskResult.failure(task.id(), exception, now));
             failQuietly(task);
+            metrics.increment("tasks.failed");
+            log.error("Task {} failed in worker {}: {}", task.id(), name, exception.getMessage());
             retryIfPossible(task);
 
             return true;
@@ -147,14 +150,12 @@ public final class Worker implements Runnable {
         }
 
         try {
-            retryScheduler.scheduleRetry(task, taskQueue);
+            boolean scheduled = retryScheduler.scheduleRetry(task, taskQueue);
+            if (scheduled) {
+                metrics.increment("tasks.retried");
+                log.info("Task {} scheduled for retry", task.id());
+            }
         } catch (RuntimeException ignored) {
-        }
-    }
-
-    private static void requireNotNull(Object value, String message) {
-        if (value == null) {
-            throw new IllegalArgumentException(message);
         }
     }
 

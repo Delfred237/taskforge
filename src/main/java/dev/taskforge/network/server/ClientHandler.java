@@ -1,17 +1,20 @@
 package dev.taskforge.network.server;
 
 import com.google.gson.Gson;
+import dev.taskforge.metrics.MetricsRegistry;
 import dev.taskforge.network.protocol.MessageCodec;
 import dev.taskforge.network.protocol.Request;
 import dev.taskforge.network.protocol.Response;
 import dev.taskforge.queue.TaskSubmitter;
+import dev.taskforge.result.TaskResult;
 import dev.taskforge.result.TaskResultRepository;
 import dev.taskforge.task.Task;
 import dev.taskforge.task.TaskId;
 import dev.taskforge.task.TaskPriority;
 import dev.taskforge.task.TaskRepository;
 import dev.taskforge.task.TaskType;
-import dev.taskforge.result.TaskResult;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.io.BufferedReader;
 import java.io.IOException;
@@ -25,55 +28,59 @@ import java.util.Optional;
 
 final class ClientHandler implements Runnable {
 
-    private static final int CLIENT_READ_TIMEOUT_MS = 5000; // 5 secondes pour recevoir la requête
+    private static final Logger log = LoggerFactory.getLogger(ClientHandler.class);
+    private static final int CLIENT_READ_TIMEOUT_MS = 5000;
 
     private final Socket socket;
     private final TaskSubmitter submitter;
     private final TaskRepository taskRepository;
     private final TaskResultRepository resultRepository;
+    private final MetricsRegistry metrics;
     private final MessageCodec codec;
     private final Gson gson;
 
     ClientHandler(Socket socket,
                   TaskSubmitter submitter,
                   TaskRepository taskRepository,
-                  TaskResultRepository resultRepository) {
+                  TaskResultRepository resultRepository,
+                  MetricsRegistry metrics) {
         this.socket = Objects.requireNonNull(socket);
         this.submitter = Objects.requireNonNull(submitter);
         this.taskRepository = Objects.requireNonNull(taskRepository);
         this.resultRepository = Objects.requireNonNull(resultRepository);
+        this.metrics = Objects.requireNonNull(metrics);
         this.codec = new MessageCodec();
         this.gson = new Gson();
     }
 
     @Override
     public void run() {
-        // Try-with-resources garantit la fermeture du socket et des streams
         try (socket;
              BufferedReader in = new BufferedReader(new InputStreamReader(socket.getInputStream()));
              PrintWriter out = new PrintWriter(socket.getOutputStream(), true)) {
 
-            // Protège contre les clients qui se connectent mais n'envoient rien
             socket.setSoTimeout(CLIENT_READ_TIMEOUT_MS);
 
             String line = in.readLine();
             if (line == null || line.isBlank()) {
-                return; // Client déconnecté proprement ou requête vide
+                return;
             }
 
+            metrics.increment("network.requests");
             Request request = codec.decode(line, Request.class);
             Response response = processRequest(request);
 
             out.println(codec.encode(response));
 
         } catch (SocketTimeoutException e) {
-            System.err.println("[ClientHandler] Client timed out: " + socket.getRemoteSocketAddress());
+            metrics.increment("network.timeouts");
+            log.warn("Client timed out: {}", socket.getRemoteSocketAddress());
         } catch (IOException e) {
-            // Déconnexion brutale, réseau coupé, etc.
-            System.err.println("[ClientHandler] IO Error with client " + socket.getRemoteSocketAddress() + ": " + e.getMessage());
+            metrics.increment("network.errors");
+            log.warn("IO Error with client {}: {}", socket.getRemoteSocketAddress(), e.getMessage());
         } catch (Exception e) {
-            System.err.println("[ClientHandler] Unexpected error: " + e.getMessage());
-            e.printStackTrace();
+            metrics.increment("network.errors");
+            log.error("Unexpected error handling client", e);
         }
     }
 
@@ -87,6 +94,7 @@ final class ClientHandler implements Runnable {
                 case UNKNOWN -> Response.error(request.requestId(), "Unknown action");
             };
         } catch (Exception e) {
+            log.error("Error processing request {}", request.requestId(), e);
             return Response.error(request.requestId(), "Internal error: " + e.getMessage());
         }
     }
@@ -135,11 +143,12 @@ final class ClientHandler implements Runnable {
 
     private Response handleServerStatus(Request request) {
         String status = String.format(
-                "{\"submitted\": %d, \"rejected\": %d, \"tasksInRegistry\": %d, \"resultsStored\": %d}",
+                "{\"submitted\": %d, \"rejected\": %d, \"tasksInRegistry\": %d, \"resultsStored\": %d, \"metrics\": %s}",
                 submitter.submittedCount(),
                 submitter.rejectedCount(),
                 taskRepository.count(),
-                resultRepository.count()
+                resultRepository.count(),
+                new Gson().toJson(metrics.snapshot())
         );
         return Response.ok(request.requestId(), "Server status", status);
     }

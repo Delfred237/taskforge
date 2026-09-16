@@ -2,12 +2,16 @@ package dev.taskforge.worker;
 
 import dev.taskforge.execution.TaskExecutor;
 import dev.taskforge.execution.TimeoutTaskExecutor;
+import dev.taskforge.metrics.InMemoryMetricsRegistry;
+import dev.taskforge.metrics.MetricsRegistry;
 import dev.taskforge.queue.TaskQueue;
 import dev.taskforge.result.InMemoryTaskResultRepository;
 import dev.taskforge.result.TaskResultRepository;
 import dev.taskforge.retry.ExponentialBackoffRetryPolicy;
 import dev.taskforge.retry.RetryPolicy;
 import dev.taskforge.retry.TaskRetryScheduler;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.time.Duration;
 import java.util.ArrayList;
@@ -22,10 +26,13 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 public final class WorkerPool {
 
+    private static final Logger log = LoggerFactory.getLogger(WorkerPool.class);
+
     private final int workerCount;
     private final TaskQueue taskQueue;
     private final TaskExecutor taskExecutor;
     private final TaskResultRepository resultRepository;
+    private final MetricsRegistry metrics;
 
     private final ExecutorService workerExecutor;
     private final ExecutorService executionExecutor;
@@ -43,7 +50,8 @@ public final class WorkerPool {
                 taskQueue,
                 taskExecutor,
                 new ExponentialBackoffRetryPolicy(Duration.ofMillis(100), Duration.ofSeconds(1)),
-                new InMemoryTaskResultRepository()
+                new InMemoryTaskResultRepository(),
+                new InMemoryMetricsRegistry()
         );
     }
 
@@ -56,7 +64,8 @@ public final class WorkerPool {
                 taskQueue,
                 taskExecutor,
                 retryPolicy,
-                new InMemoryTaskResultRepository()
+                new InMemoryTaskResultRepository(),
+                new InMemoryMetricsRegistry()
         );
     }
 
@@ -64,7 +73,8 @@ public final class WorkerPool {
                       TaskQueue taskQueue,
                       TaskExecutor taskExecutor,
                       RetryPolicy retryPolicy,
-                      TaskResultRepository resultRepository) {
+                      TaskResultRepository resultRepository,
+                      MetricsRegistry metrics) {
         if (workerCount <= 0) {
             throw new IllegalArgumentException("workerCount must be greater than 0");
         }
@@ -72,11 +82,14 @@ public final class WorkerPool {
         requireNotNull(taskQueue, "taskQueue must not be null");
         requireNotNull(taskExecutor, "taskExecutor must not be null");
         requireNotNull(retryPolicy, "retryPolicy must not be null");
+        requireNotNull(resultRepository, "resultRepository must not be null");
+        requireNotNull(metrics, "metrics must not be null");
 
         this.workerCount = workerCount;
         this.taskQueue = taskQueue;
         this.taskExecutor = taskExecutor;
-        this.resultRepository = Objects.requireNonNull(resultRepository, "resultRepository must not be null");
+        this.resultRepository = resultRepository;
+        this.metrics = metrics;
 
         this.workerExecutor = Executors.newFixedThreadPool(workerCount, new WorkerThreadFactory());
         this.executionExecutor = Executors.newCachedThreadPool(new ExecutionThreadFactory());
@@ -94,7 +107,8 @@ public final class WorkerPool {
                     taskQueue,
                     timeoutTaskExecutor,
                     retryScheduler,
-                    resultRepository
+                    resultRepository,
+                    metrics
             ));
         }
     }
@@ -113,6 +127,7 @@ public final class WorkerPool {
         }
 
         started = true;
+        log.info("WorkerPool started with {} workers", workerCount);
     }
 
     public void shutdown(Duration timeout) throws InterruptedException {
@@ -123,6 +138,7 @@ public final class WorkerPool {
         }
 
         shutdownRequested = true;
+        log.info("WorkerPool shutting down...");
 
         long millis = timeout.toMillis();
 
@@ -142,6 +158,8 @@ public final class WorkerPool {
             executionExecutor.shutdownNow();
             executionExecutor.awaitTermination(millis, TimeUnit.MILLISECONDS);
         }
+
+        log.info("WorkerPool shut down");
     }
 
     public boolean isShutdown() {
@@ -169,7 +187,6 @@ public final class WorkerPool {
     }
 
     private static final class ExecutionThreadFactory implements ThreadFactory {
-
         private final AtomicInteger counter = new AtomicInteger(1);
 
         @Override
@@ -181,7 +198,6 @@ public final class WorkerPool {
     }
 
     private static final class RetryThreadFactory implements ThreadFactory {
-
         private final AtomicInteger counter = new AtomicInteger(1);
 
         @Override

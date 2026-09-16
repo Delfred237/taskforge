@@ -1,8 +1,11 @@
 package dev.taskforge.network.server;
 
+import dev.taskforge.metrics.MetricsRegistry;
 import dev.taskforge.queue.TaskSubmitter;
 import dev.taskforge.result.TaskResultRepository;
 import dev.taskforge.task.TaskRepository;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.net.ServerSocket;
@@ -15,6 +18,7 @@ import java.util.concurrent.TimeUnit;
 
 public final class TaskServer {
 
+    private static final Logger log = LoggerFactory.getLogger(TaskServer.class);
     private static final int ACCEPT_TIMEOUT_MS = 1000;
     private static final int MAX_CONNECTIONS = 50;
 
@@ -22,6 +26,7 @@ public final class TaskServer {
     private final TaskSubmitter submitter;
     private final TaskRepository taskRepository;
     private final TaskResultRepository resultRepository;
+    private final MetricsRegistry metrics;
 
     private ServerSocket serverSocket;
     private ExecutorService connectionExecutor;
@@ -31,11 +36,13 @@ public final class TaskServer {
     public TaskServer(int port,
                       TaskSubmitter submitter,
                       TaskRepository taskRepository,
-                      TaskResultRepository resultRepository) {
+                      TaskResultRepository resultRepository,
+                      MetricsRegistry metrics) {
         this.port = port;
         this.submitter = Objects.requireNonNull(submitter);
         this.taskRepository = Objects.requireNonNull(taskRepository);
         this.resultRepository = Objects.requireNonNull(resultRepository);
+        this.metrics = Objects.requireNonNull(metrics);
     }
 
     public synchronized void startAsync() throws IOException {
@@ -44,7 +51,6 @@ public final class TaskServer {
         }
 
         serverSocket = new ServerSocket(port);
-        // Permet à la boucle accept() de se réveiller toutes les secondes pour vérifier 'running'
         serverSocket.setSoTimeout(ACCEPT_TIMEOUT_MS);
 
         connectionExecutor = Executors.newFixedThreadPool(MAX_CONNECTIONS);
@@ -53,7 +59,7 @@ public final class TaskServer {
         acceptorThread = new Thread(this::acceptLoop, "TaskServer-Acceptor");
         acceptorThread.start();
 
-        System.out.println("[TaskServer] Listening on port " + getPort());
+        log.info("TaskServer listening on port {}", getPort());
     }
 
     public int getPort() {
@@ -69,13 +75,14 @@ public final class TaskServer {
         }
 
         running = false;
+        log.info("TaskServer stopping...");
 
         try {
             if (serverSocket != null && !serverSocket.isClosed()) {
                 serverSocket.close();
             }
         } catch (IOException e) {
-            System.err.println("[TaskServer] Error closing server socket: " + e.getMessage());
+            log.error("Error closing server socket", e);
         }
 
         if (connectionExecutor != null) {
@@ -98,25 +105,28 @@ public final class TaskServer {
             }
         }
 
-        System.out.println("[TaskServer] Stopped.");
+        log.info("TaskServer stopped");
     }
 
     private void acceptLoop() {
         while (running) {
             try {
                 Socket clientSocket = serverSocket.accept();
-                connectionExecutor.submit(new ClientHandler(clientSocket, submitter, taskRepository, resultRepository));
+                // Passage correct des 5 arguments au ClientHandler
+                connectionExecutor.submit(new ClientHandler(
+                        clientSocket,
+                        submitter,
+                        taskRepository,
+                        resultRepository,
+                        metrics
+                ));
             } catch (SocketException e) {
-                // Se produit quand on ferme le serverSocket ou que le timeout expire
-                if (running) {
-                    // Timeout normal, on continue la boucle
-                } else {
-                    // Arrêt demandé
+                if (!running) {
                     break;
                 }
             } catch (IOException e) {
                 if (running) {
-                    System.err.println("[TaskServer] Error accepting client: " + e.getMessage());
+                    log.error("Error accepting client", e);
                 }
             }
         }
